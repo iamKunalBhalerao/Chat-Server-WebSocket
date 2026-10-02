@@ -1,4 +1,5 @@
 import { WebSocketServer, WebSocket } from "ws";
+import type { MessageType } from "./types";
 
 const wss = new WebSocketServer({ port: 8080 });
 
@@ -11,6 +12,195 @@ wss.on("connection", (socket) => {
   console.log("Connected to WebSocket!");
   let isAlive: boolean;
   let currentUser: string | null = null;
+
+  const handlers = {
+    identify: (data: any) => {
+      const { userId } = data;
+      if (!userId || !userId.trim()) {
+        return socket.send(
+          JSON.stringify({
+            type: "error",
+            code: "INVALID_USERID",
+            message: "Invalid UserId",
+          }),
+        );
+      }
+      if (currentUser) {
+        return socket.send(
+          JSON.stringify({
+            type: "error",
+            code: "ALREADY_IDENTIFIED",
+            message: "You have already identified",
+          }),
+        );
+      } else if (users.has(userId)) {
+        return socket.send(
+          JSON.stringify({
+            type: "error",
+            code: "USER_ALREADY_EXISTS",
+            message: "You already identified!",
+          }),
+        );
+      }
+      users.set(userId, socket);
+      currentUser = userId;
+      socket.send(
+        JSON.stringify({
+          type: "user_joined",
+          userId,
+        }),
+      );
+    },
+    direct_message: (data: any) => {
+      const { to, message, requestId } = data;
+      const messageId = crypto.randomUUID();
+
+      if (!currentUser) {
+        return socket.send(
+          JSON.stringify({
+            type: "error",
+            code: "NOT_IDENTIFIED",
+            message: "You are not identified",
+          }),
+        );
+      }
+
+      const reciver = users.get(to);
+      if (!reciver) {
+        socket.send(
+          JSON.stringify({
+            type: "error",
+            code: "USER_NOT_FOUND",
+            message: "User is not online",
+          }),
+        );
+        return;
+      }
+
+      reciver.send(
+        JSON.stringify({
+          type: "recive_message",
+          messageId,
+          from: currentUser,
+          message,
+        }),
+      );
+
+      socket.send(
+        JSON.stringify({
+          type: "ack",
+          requestId,
+          messageId,
+          status: "accepted",
+        }),
+      );
+    },
+    message_received: (data: any) => {
+      const { to, messageId } = data;
+      if (!currentUser) {
+        return socket.send(
+          JSON.stringify({
+            type: "error",
+            code: "NOT_IDENTIFIED",
+            message: "You are not identified",
+          }),
+        );
+      }
+
+      const reciver = users.get(to);
+      if (!reciver) {
+        return socket.send(
+          JSON.stringify({
+            type: "error",
+            code: "USER_NOT_FOUND",
+            message: "User is not online",
+          }),
+        );
+      }
+
+      reciver.send(
+        JSON.stringify({
+          type: "delivery_ack",
+          messageId,
+          status: "delivered",
+        }),
+      );
+    },
+    join_room: (data: any) => {
+      const { roomId } = data;
+      if (!currentUser) {
+        return socket.send(
+          JSON.stringify({
+            type: "error",
+            code: "NOT_IDENTIFIED",
+            message: "You are not identified",
+          }),
+        );
+      }
+      if (!rooms.has(roomId)) {
+        rooms.set(roomId, new Set([socket]));
+      } else if (rooms.get(roomId)!.has(socket)) {
+        return socket.send(
+          JSON.stringify({
+            type: "error",
+            code: "ALREADY_IN_ROOM",
+            message: "You are already in the room",
+          }),
+        );
+      } else {
+        rooms.get(roomId)!.add(socket);
+      }
+    },
+    room_message: (data: any) => {
+      const { roomId, message, requestId } = data;
+      const room = rooms.get(roomId);
+      if (!room) return;
+      const messageId = crypto.randomUUID();
+
+      if (!room.has(socket)) {
+        return socket.send(
+          JSON.stringify({
+            type: "error",
+            code: "NOT_IN_ROOM",
+            message: "You are not part of this room",
+          }),
+        );
+      }
+
+      room.forEach((client) => {
+        if (client !== socket && client.readyState === WebSocket.OPEN) {
+          client.send(
+            JSON.stringify({
+              type: "room_message",
+              roomId,
+              from: currentUser,
+              messageId,
+              message,
+            }),
+          );
+        }
+      });
+      socket.send(
+        JSON.stringify({
+          type: "ack",
+          requestId,
+          roomId: roomId,
+          messageId,
+          status: "accepted",
+        }),
+      );
+    },
+    leave_room: (data: any) => {
+      const { roomId } = data;
+      const room = rooms.get(roomId);
+      if (room) {
+        room.delete(socket);
+        if (room.size === 0) {
+          rooms.delete(roomId);
+        }
+      }
+    },
+  };
 
   isAlive = true;
   socket.on("pong", () => (isAlive = true));
@@ -28,153 +218,6 @@ wss.on("connection", (socket) => {
     }
 
     if (typeof parsedJson === "object" && parsedJson !== null) {
-      // MESSAGE HANDLING
-
-      type MessageType =
-        | "identify"
-        | "direct_message"
-        | "join_room"
-        | "room_message"
-        | "leave_room";
-
-      const handlers = {
-        identify: (data: any) => {
-          const { userId } = data;
-          if (!userId || !userId.trim()) {
-            return socket.send(
-              JSON.stringify({
-                type: "error",
-                code: "INVALID_USERID",
-                message: "Invalid UserId",
-              }),
-            );
-          }
-          if (currentUser) {
-            return socket.send(
-              JSON.stringify({
-                type: "error",
-                code: "ALREADY_IDENTIFIED",
-                message: "You have already identified",
-              }),
-            );
-          } else if (users.has(userId)) {
-            return socket.send(
-              JSON.stringify({
-                type: "error",
-                code: "USER_ALREADY_EXISTS",
-                message: "You already identified!",
-              }),
-            );
-          }
-          users.set(userId, socket);
-          currentUser = userId;
-          socket.send(
-            JSON.stringify({
-              type: "user_joined",
-              userId,
-            }),
-          );
-        },
-        direct_message: (data: any) => {
-          const { to, message } = data;
-
-          if (!currentUser) {
-            return socket.send(
-              JSON.stringify({
-                type: "error",
-                code: "NOT_IDENTIFIED",
-                message: "You are not identified",
-              }),
-            );
-          }
-
-          const reciver = users.get(to);
-          if (!reciver) {
-            socket.send(
-              JSON.stringify({
-                type: "error",
-                code: "USER_NOT_FOUND",
-                message: "User is not online",
-              }),
-            );
-            return;
-          }
-
-          reciver.send(
-            JSON.stringify({
-              type: "recive_message",
-              messageId: crypto.randomUUID(),
-              from: currentUser,
-              message,
-            }),
-          );
-        },
-        join_room: (data: any) => {
-          const { roomId } = data;
-          if (!currentUser) {
-            return socket.send(
-              JSON.stringify({
-                type: "error",
-                code: "NOT_IDENTIFIED",
-                message: "You are not identified",
-              }),
-            );
-          }
-          if (!rooms.has(roomId)) {
-            rooms.set(roomId, new Set([socket]));
-          } else if (rooms.get(roomId)!.has(socket)) {
-            return socket.send(
-              JSON.stringify({
-                type: "error",
-                code: "ALREADY_IN_ROOM",
-                message: "You are already in the room",
-              }),
-            );
-          } else {
-            rooms.get(roomId)!.add(socket);
-          }
-        },
-        room_message: (data: any) => {
-          const { roomId, message } = data;
-          const room = rooms.get(roomId);
-          if (!room) return;
-
-          if (room!.has(socket)) {
-            return socket.send(
-              JSON.stringify({
-                type: "error",
-                code: "NOT_IN_ROOM",
-                message: "You are not part of this room",
-              }),
-            );
-          }
-
-          room.forEach((client) => {
-            if (client !== socket && client.readyState === WebSocket.OPEN) {
-              client.send(
-                JSON.stringify({
-                  type: "room_message",
-                  roomId,
-                  from: currentUser,
-                  messageId: crypto.randomUUID(),
-                  message,
-                }),
-              );
-            }
-          });
-        },
-        leave_room: (data: any) => {
-          const { roomId } = data;
-          const room = rooms.get(roomId);
-          if (room) {
-            room.delete(socket);
-            if (room.size === 0) {
-              rooms.delete(roomId);
-            }
-          }
-        },
-      };
-
       const handler = handlers[parsedJson.type as MessageType];
       if (handler) {
         handler(parsedJson);
