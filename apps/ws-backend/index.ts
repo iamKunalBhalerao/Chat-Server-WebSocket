@@ -29,8 +29,30 @@ wss.on("connection", (socket) => {
       if (parsedJson.type === "identify") {
         const { userId } = parsedJson;
         if (!userId || !userId.trim()) {
-          socket.close();
-          return;
+          return socket.send(
+            JSON.stringify({
+              type: "error",
+              code: "INVALID_USERID",
+              message: "Invalid UserId",
+            }),
+          );
+        }
+        if (currentUser) {
+          return socket.send(
+            JSON.stringify({
+              type: "error",
+              code: "ALREADY_IDENTIFIED",
+              message: "You have already identified",
+            }),
+          );
+        } else if (users.has(userId)) {
+          return socket.send(
+            JSON.stringify({
+              type: "error",
+              code: "USER_ALREADY_EXISTS",
+              message: "You already identified!",
+            }),
+          );
         }
         users.set(userId, socket);
         currentUser = userId;
@@ -45,8 +67,27 @@ wss.on("connection", (socket) => {
       if (parsedJson.type === "direct_message") {
         const { to, message } = parsedJson;
 
+        if (!currentUser) {
+          return socket.send(
+            JSON.stringify({
+              type: "error",
+              code: "NOT_IDENTIFIED",
+              message: "You are not identified",
+            }),
+          );
+        }
+
         const reciver = users.get(to);
-        if (!reciver) return socket.close();
+        if (!reciver) {
+          socket.send(
+            JSON.stringify({
+              type: "error",
+              code: "USER_NOT_FOUND",
+              message: "User is not online",
+            }),
+          );
+          return;
+        }
 
         reciver.send(
           JSON.stringify({
@@ -61,6 +102,14 @@ wss.on("connection", (socket) => {
         const { roomId } = parsedJson;
         if (!rooms.has(roomId)) {
           rooms.set(roomId, new Set([socket]));
+        } else if (rooms.get(roomId)!.has(socket)) {
+          return socket.send(
+            JSON.stringify({
+              type: "error",
+              code: "ALREADY_IN_ROOM",
+              message: "You are already in the room",
+            }),
+          );
         } else {
           rooms.get(roomId)!.add(socket);
         }
@@ -101,18 +150,17 @@ wss.on("connection", (socket) => {
         JSON.stringify({ status: "ignored", message: "dummy response" }),
       );
     }
+  });
 
-    socket.on("close", () => {
-      if (currentUser) {
-        users.delete(currentUser);
+  socket.on("close", () => {
+    if (currentUser) {
+      users.delete(currentUser);
+    }
+    rooms.forEach((clients, roomId) => {
+      clients.delete(socket);
+      if (clients.size === 0) {
+        rooms.delete(roomId);
       }
-      rooms.forEach((clients, roomId) => {
-        clients.delete(socket);
-        if (clients.size === 0) {
-          rooms.delete(roomId);
-        }
-      });
-      socket.close();
     });
   });
 });
