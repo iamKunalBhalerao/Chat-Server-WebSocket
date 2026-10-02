@@ -9,7 +9,11 @@ const rooms = new Map<string, Set<WebSocket>>();
 
 wss.on("connection", (socket) => {
   console.log("Connected to WebSocket!");
+  let isAlive: boolean;
   let currentUser: string | null = null;
+
+  isAlive = true;
+  socket.on("pong", () => (isAlive = true));
 
   socket.on("message", (message) => {
     const parsedData = message.toString();
@@ -92,6 +96,7 @@ wss.on("connection", (socket) => {
         reciver.send(
           JSON.stringify({
             type: "recive_message",
+            messageId: crypto.randomUUID(),
             from: currentUser,
             message,
           }),
@@ -100,6 +105,15 @@ wss.on("connection", (socket) => {
 
       if (parsedJson.type === "join_room") {
         const { roomId } = parsedJson;
+        if (!currentUser) {
+          return socket.send(
+            JSON.stringify({
+              type: "error",
+              code: "NOT_IDENTIFIED",
+              message: "You are not identified",
+            }),
+          );
+        }
         if (!rooms.has(roomId)) {
           rooms.set(roomId, new Set([socket]));
         } else if (rooms.get(roomId)!.has(socket)) {
@@ -120,6 +134,16 @@ wss.on("connection", (socket) => {
         const room = rooms.get(roomId);
         if (!room) return;
 
+        if (room!.has(socket)) {
+          return socket.send(
+            JSON.stringify({
+              type: "error",
+              code: "NOT_IN_ROOM",
+              message: "You are not part of this room",
+            }),
+          );
+        }
+
         room.forEach((client) => {
           if (client !== socket && client.readyState === WebSocket.OPEN) {
             client.send(
@@ -127,6 +151,7 @@ wss.on("connection", (socket) => {
                 type: "room_message",
                 roomId,
                 from: currentUser,
+                messageId: crypto.randomUUID(),
                 message,
               }),
             );
@@ -152,6 +177,14 @@ wss.on("connection", (socket) => {
     }
   });
 
+  const interval = setInterval(() => {
+    if (isAlive === false) {
+      return socket.terminate();
+    }
+    isAlive = false;
+    socket.ping();
+  }, 30 * 1000);
+
   socket.on("close", () => {
     if (currentUser) {
       users.delete(currentUser);
@@ -162,5 +195,7 @@ wss.on("connection", (socket) => {
         rooms.delete(roomId);
       }
     });
+
+    clearInterval(interval);
   });
 });
